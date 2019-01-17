@@ -1,5 +1,7 @@
 import copy
+from collections import defaultdict
 from datetime import datetime
+from sys import getsizeof
 import threading
 from typing import Any  # NOQA
 from typing import Dict  # NOQA
@@ -32,6 +34,13 @@ class InMemoryStorage(base.BaseStorage):
         self.study_name = DEFAULT_STUDY_NAME_PREFIX + IN_MEMORY_STORAGE_STUDY_UUID  # type: str
 
         self._lock = threading.Lock()
+        self.stats_bytes = defaultdict(int)
+        self.stats_counts = defaultdict(int)
+
+    def _stats(self, key, val):
+        self.stats_bytes[key] += getsizeof(val)
+        self.stats_counts[key] += 1
+        return val
 
     def __getstate__(self):
         # type: () -> Dict[Any, Any]
@@ -47,6 +56,7 @@ class InMemoryStorage(base.BaseStorage):
     def create_new_study_id(self, study_name=None):
         # type: (Optional[str]) -> int
 
+        self._stats('create_new_study_id', study_name)
         if study_name is not None:
             self.study_name = study_name
 
@@ -56,6 +66,7 @@ class InMemoryStorage(base.BaseStorage):
         # type: (int, structs.StudyDirection) -> None
 
         with self._lock:
+            self._stats('set_study_direction', (study_id, direction))
             if self.direction != structs.StudyDirection.NOT_SET and self.direction != direction:
                 raise ValueError(
                     'Cannot overwrite study direction from {} to {}.'.format(
@@ -66,12 +77,16 @@ class InMemoryStorage(base.BaseStorage):
         # type: (int, str, Any) -> None
 
         with self._lock:
+            self._stats('set_study_user_attr', (study_id, key, value))
             self.study_user_attrs[key] = value
 
     def set_study_system_attr(self, study_id, key, value):
         # type: (int, str, Any) -> None
 
         with self._lock:
+            self._stats('set_study_system_attr', study_id, key, value)
+            self.stats_bytes['set_study_system_attr'] += getsizeof(value)
+            self.stats_counts['set_study_system_attr'] += 1
             self.study_system_attrs[key] = value
 
     def get_study_id_from_name(self, study_name):
@@ -91,19 +106,22 @@ class InMemoryStorage(base.BaseStorage):
     def get_study_direction(self, study_id):
         # type: (int) -> structs.StudyDirection
 
+        self._stats('get_study_direction', self.direction)
         return self.direction
 
     def get_study_user_attrs(self, study_id):
         # type: (int) -> Dict[str, Any]
 
         with self._lock:
-            return copy.deepcopy(self.study_user_attrs)
+            return self._stats('get_study_user_attrs', copy.deepcopy(self.study_user_attrs))
 
     def get_study_system_attrs(self, study_id):
         # type: (int) -> Dict[str, Any]
 
         with self._lock:
-            return copy.deepcopy(self.study_system_attrs)
+            self.stats_bytes['get_study_system_attrs'] += getsizeof(self.study_system_attrs)
+            self.stats_counts['get_study_system_attrs'] += 1
+            return self._stats('get_study_system_attrs', copy.deepcopy(self.study_system_attrs))
 
     def get_all_study_summaries(self):
         # type: () -> List[structs.StudySummary]
@@ -117,7 +135,7 @@ class InMemoryStorage(base.BaseStorage):
         if len(self.trials) > 0:
             datetime_start = min([t.datetime_start for t in self.trials])
 
-        return [structs.StudySummary(
+        return self._stats('get_all_study_summaries', [structs.StudySummary(
             study_id=IN_MEMORY_STORAGE_STUDY_ID,
             study_name=self.study_name,
             direction=self.direction,
@@ -126,7 +144,7 @@ class InMemoryStorage(base.BaseStorage):
             system_attrs=copy.deepcopy(self.study_system_attrs),
             n_trials=len(self.trials),
             datetime_start=datetime_start
-        )]
+        )])
 
     def create_new_trial_id(self, study_id):
         # type: (int) -> int
@@ -148,12 +166,13 @@ class InMemoryStorage(base.BaseStorage):
                     datetime_complete=None
                 )
             )
-        return trial_id
+        return self._stats('create_new_trial_id', trial_id)
 
     def set_trial_state(self, trial_id, state):
         # type: (int, structs.TrialState) -> None
 
         with self._lock:
+            self._stats('set_trial_state', (trial_id, state))
             self.trials[trial_id] = self.trials[trial_id]._replace(state=state)
             if state.is_finished():
                 self.trials[trial_id] = \
@@ -163,6 +182,8 @@ class InMemoryStorage(base.BaseStorage):
         # type: (int, str, float, distributions.BaseDistribution) -> bool
 
         with self._lock:
+            self._stats('set_trial_param', (trial_id, param_name, param_value_internal, distribution))
+
             # Check param distribution compatibility with previous trial(s).
             if param_name in self.param_distribution:
                 distributions.check_distribution_compatibility(
@@ -185,18 +206,21 @@ class InMemoryStorage(base.BaseStorage):
     def get_trial_param(self, trial_id, param_name):
         # type: (int, str) -> float
 
-        return self.trials[trial_id].params_in_internal_repr[param_name]
+
+        return self._stats('get_trial_param', self.trials[trial_id].params_in_internal_repr[param_name])
 
     def set_trial_value(self, trial_id, value):
         # type: (int, float) -> None
 
         with self._lock:
+            self._stats('set_trial_value', (trial_id, value))
             self.trials[trial_id] = self.trials[trial_id]._replace(value=value)
 
     def set_trial_intermediate_value(self, trial_id, step, intermediate_value):
         # type: (int, int, float) -> bool
 
         with self._lock:
+            self._stats('set_trial_intermediate_value', (trial_id, step, intermediate_value))
             values = self.trials[trial_id].intermediate_values
             if step in values:
                 return False
@@ -209,35 +233,37 @@ class InMemoryStorage(base.BaseStorage):
         # type: (int, str, Any) -> None
 
         with self._lock:
+            self._stats('set_trial_user_attr', (trial_id, key, value))
             self.trials[trial_id].user_attrs[key] = value
 
     def set_trial_system_attr(self, trial_id, key, value):
         # type: (int, str, Any) -> None
 
         with self._lock:
+            self._stats('set_trial_system_attr', (trial_id, key, value))
             self.trials[trial_id].system_attrs[key] = value
 
     def get_trial(self, trial_id):
         # type: (int) -> structs.FrozenTrial
 
         with self._lock:
-            return copy.deepcopy(self.trials[trial_id])
+            return self._stats('get_trial', copy.deepcopy(self.trials[trial_id]))
 
     def get_all_trials(self, study_id):
         # type: (int) -> List[structs.FrozenTrial]
 
         self._check_study_id(study_id)
         with self._lock:
-            return copy.deepcopy(self.trials)
+            return self._stats('get_all_trials', copy.deepcopy(self.trials))
 
     def get_n_trials(self, study_id, state=None):
         # type: (int, Optional[structs.TrialState]) -> int
 
         self._check_study_id(study_id)
         if state is None:
-            return len(self.trials)
+            return self._stats('get_n_trials', len(self.trials))
 
-        return len([t for t in self.trials if t.state == state])
+        return self._stats('get_n_trials', len([t for t in self.trials if t.state == state]))
 
     def _check_study_id(self, study_id):
         # type: (int) -> None
