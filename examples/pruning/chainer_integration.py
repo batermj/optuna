@@ -95,8 +95,10 @@ def objective(trial):
 
 
 if __name__ == '__main__':
-    study = optuna.create_study(pruner=optuna.pruners.MedianPruner())
-    study.optimize(objective, n_trials=100)
+    #study = optuna.create_study(pruner=optuna.pruners.MedianPruner())
+    study = optuna.create_study(pruner=optuna.pruners.SuccessiveHalvingPruner())
+    study.optimize(objective, timeout=10 * 60) #n_trials=100)
+#    study.optimize(objective, timeout=1)
     pruned_trials = [t for t in study.trials if t.state == optuna.structs.TrialState.PRUNED]
     complete_trials = [t for t in study.trials if t.state == optuna.structs.TrialState.COMPLETE]
     print('Study statistics: ')
@@ -116,3 +118,8 @@ if __name__ == '__main__':
     print('  User attrs:')
     for key, value in trial.user_attrs.items():
         print('    {}: {}'.format(key, value))
+
+    print()
+    print('Stats:')
+    for k, n in study.storage.stats_counts.items():
+        print(' - {}: {} ({} KB)'.format(k, n, study.storage.stats_bytes[k] // 1024))
