@@ -1,4 +1,5 @@
 from collections import defaultdict
+import copy
 from datetime import datetime
 import json
 import six
@@ -50,6 +51,9 @@ class RDBStorage(BaseStorage):
         models.BaseModel.metadata.create_all(self.engine)
         self._check_table_schema_compatibility()
         self.logger = logging.get_logger(__name__)
+
+        self.cache_mode = True
+        self.finished_trails = {}
 
     def create_new_study_id(self, study_name=None):
         # type: (Optional[str]) -> int
@@ -388,15 +392,32 @@ class RDBStorage(BaseStorage):
         user_attributes = models.TrialUserAttributeModel.where_trial(trial, session)
         system_attributes = models.TrialSystemAttributeModel.where_trial(trial, session)
 
-        return self._merge_trials_orm([trial], params, values,
-                                      user_attributes, system_attributes)[0]
+        trial = self._merge_trials_orm([trial], params, values,
+                                       user_attributes, system_attributes)[0]
+        if self.cache_mode:
+            if trial.state is not structs.TrialState.RUNNING:
+                self.finished_trails[trial_id] = copy.deepcopy(trial)
+        return trial
 
     def get_all_trials(self, study_id):
         # type: (int) -> List[structs.FrozenTrial]
 
         session = self.scoped_session()
-
         study = models.StudyModel.find_or_raise_by_id(study_id, session)
+
+        if self.cache_mode:
+            trial_ids = models.TrialModel.all_trial_id_where_study(study, session)
+            # TODO(ohta): Switch to batch mode if current cache is too small.
+            trials = []
+            for trial_id in trial_ids:
+                if trial_id in self.finished_trails:
+                    trial = copy.deepcopy(self.finished_trails[trial_id])
+                else:
+                    trial = self.get_trial(trial_id)
+                trials.append(trial)
+            print("# get_all_trials: hit={}/{}".format(len(self.finished_trails), len(trials)))
+            return trials
+
         trials = models.TrialModel.where_study(study, session)
         params = models.TrialParamModel.where_study(study, session)
         values = models.TrialValueModel.where_study(study, session)
