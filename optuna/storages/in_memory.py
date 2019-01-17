@@ -1,7 +1,7 @@
 import copy
 from collections import defaultdict
 from datetime import datetime
-from sys import getsizeof
+from pympler.asizeof import asizeof
 import threading
 from typing import Any  # NOQA
 from typing import Dict  # NOQA
@@ -38,7 +38,7 @@ class InMemoryStorage(base.BaseStorage):
         self.stats_counts = defaultdict(int)
 
     def _stats(self, key, val):
-        self.stats_bytes[key] += getsizeof(val)
+        self.stats_bytes[key] += asizeof(val)
         self.stats_counts[key] += 1
         return val
 
@@ -85,7 +85,7 @@ class InMemoryStorage(base.BaseStorage):
 
         with self._lock:
             self._stats('set_study_system_attr', study_id, key, value)
-            self.stats_bytes['set_study_system_attr'] += getsizeof(value)
+            self.stats_bytes['set_study_system_attr'] += asizeof(value)
             self.stats_counts['set_study_system_attr'] += 1
             self.study_system_attrs[key] = value
 
@@ -119,7 +119,7 @@ class InMemoryStorage(base.BaseStorage):
         # type: (int) -> Dict[str, Any]
 
         with self._lock:
-            self.stats_bytes['get_study_system_attrs'] += getsizeof(self.study_system_attrs)
+            self.stats_bytes['get_study_system_attrs'] += asizeof(self.study_system_attrs)
             self.stats_counts['get_study_system_attrs'] += 1
             return self._stats('get_study_system_attrs', copy.deepcopy(self.study_system_attrs))
 
