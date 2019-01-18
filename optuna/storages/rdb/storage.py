@@ -1,4 +1,5 @@
 from collections import defaultdict
+import copy
 from datetime import datetime
 import json
 import six
@@ -50,6 +51,7 @@ class RDBStorage(BaseStorage):
         models.BaseModel.metadata.create_all(self.engine)
         self._check_table_schema_compatibility()
         self.logger = logging.get_logger(__name__)
+        self.finished_trials_cache = {}  # type: Dict[int, structs.FrozenTrial]
 
     def create_new_study_id(self, study_name=None):
         # type: (Optional[str]) -> int
@@ -388,10 +390,27 @@ class RDBStorage(BaseStorage):
         user_attributes = models.TrialUserAttributeModel.where_trial(trial, session)
         system_attributes = models.TrialSystemAttributeModel.where_trial(trial, session)
 
-        return self._merge_trials_orm([trial], params, values,
-                                      user_attributes, system_attributes)[0]
+        frozen_trial = self._merge_trials_orm([trial], params, values,
+                                              user_attributes, system_attributes)[0]
+        self._cache_trial_if_safe(frozen_trial)
+        return frozen_trial
 
-    def get_all_trials(self, study_id):
+    def _cache_trial_if_safe(self, trial):
+        # type: (structs.FrozenTrial) -> None
+
+        if len(self.finished_trials_cache) > 100000:
+            # TODO(ohta): Use more sophisticated cache management strategy.
+            self.finished_trials_cache.clear()
+
+        if trial.trial_id in self.finished_trials_cache or \
+           trial.state is structs.TrialState.RUNNING:
+            return
+
+        # We assume that the state of a finished trial is never updated anymore,
+        # so we can safely cache it.
+        self.finished_trials_cache[trial.trial_id] = copy.deepcopy(trial)
+
+    def _get_all_trials_in_batch(self, study_id):
         # type: (int) -> List[structs.FrozenTrial]
 
         session = self.scoped_session()
@@ -405,6 +424,30 @@ class RDBStorage(BaseStorage):
 
         return self._merge_trials_orm(trials, params, values,
                                       user_attributes, system_attributes)
+
+    def get_all_trials(self, study_id):
+        # type: (int) -> List[structs.FrozenTrial]
+
+        if len(self.finished_trials_cache) == 0:
+            trials = self._get_all_trials_in_batch(study_id)
+            for trial in trials:
+                self._cache_trial_if_safe(trial)
+            return trials
+
+        session = self.scoped_session()
+
+        study = models.StudyModel.find_or_raise_by_id(study_id, session)
+        trial_ids = models.TrialModel.all_trial_ids_where_study(study, session)
+
+        trials = []
+        for trial_id in trial_ids:
+            if trial_id in self.finished_trials_cache:
+                trial = copy.deepcopy(self.finished_trials_cache[trial_id])
+            else:
+                trial = self.get_trial(trial_id)
+            trials.append(trial)
+
+        return trials
 
     def get_n_trials(self, study_id, state=None):
         # type: (int, Optional[structs.TrialState]) -> int
